@@ -1,0 +1,55 @@
+#!/bin/bash
+
+# Copyright © 2019 Red Hat, Inc.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+set -e
+
+REPODIR="$PWD"
+
+# Unset these so `git clone`, `git checkout` below don't think they're
+# operating on the real repository while everything is in flux.
+# CAVEAT: Don't perform any potentially writing git command inside the repo!
+unset GIT_DIR
+unset GIT_QUARANTINE_PATH
+
+# Create a temporary worktree to avoid disturbing the real repo.
+# Don't use `git worktree` because it doesn't work in a pre-receive hook.
+TEMPROOT="$(mktemp --directory -t ansible-prereceive-hook.XXXXXXXXXX)"
+TEMPREPO="${TEMPROOT}/repo"
+WORKTREE="${TEMPROOT}/worktree"
+
+# Remove the temporary tree on exit.
+trap "rm -rf '$TEMPROOT'" EXIT
+
+cp -a "${REPODIR}/." "${TEMPREPO}"
+git clone "$TEMPREPO" "$WORKTREE"
+
+pushd "$WORKTREE" > /dev/null
+while read old_commit new_commit refname; do
+    echo ">>>>> Verifying changes to ${refname} with ansible-review,"
+    echo "      from commit ${old_commit}"
+    echo "      to commit ${new_commit} <<<<<"
+    git log --pretty=%H --no-merges --reverse "${old_commit}..${new_commit}" | \
+        while read commit_to_check; do
+            echo ">>> Checking commit $commit_to_check <<<"
+            # Ensure ansible-review finds all the files it wants to check.
+            git checkout --quiet --detach "$commit_to_check"
+
+            git diff "${commit_to_check}^..${commit_to_check}" | \
+                ansible-review
+        done
+done
+popd > /dev/null # $WORKTREE
